@@ -239,7 +239,7 @@ func TestRefreshAgentConfigs_ReturnsMounts(t *testing.T) {
 	require.NotEmpty(t, homeMounts)
 	found := false
 	for _, m := range homeMounts {
-		if m.containerPath == "/root/.claude.json" {
+		if m.containerPath == containerHome+"/.claude.json" {
 			found = true
 			require.Contains(t, m.hostPath, ".home-seeds")
 			data, err := os.ReadFile(m.hostPath)

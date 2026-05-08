@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -21,37 +20,37 @@ func TestGenerateName(t *testing.T) {
 			name:         "id only when title empty",
 			sessionID:    "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
 			sessionTitle: "",
-			want:         "agent-deck-a1b2c3d4",
+			want:         "arnold-a1b2c3d4",
 		},
 		{
 			name:         "title included",
 			sessionID:    "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
 			sessionTitle: "my-refactor",
-			want:         "agent-deck-my-refactor-a1b2c3d4",
+			want:         "arnold-my-refactor-a1b2c3d4",
 		},
 		{
 			name:         "title with spaces converted to hyphens",
 			sessionID:    "a1b2c3d4-e5f6",
 			sessionTitle: "auth module",
-			want:         "agent-deck-auth-module-a1b2c3d4",
+			want:         "arnold-auth-module-a1b2c3d4",
 		},
 		{
 			name:         "title with special chars stripped",
 			sessionID:    "a1b2c3d4-e5f6",
 			sessionTitle: "fix: bug #42!",
-			want:         "agent-deck-fix-bug-42-a1b2c3d4",
+			want:         "arnold-fix-bug-42-a1b2c3d4",
 		},
 		{
 			name:         "short id preserved",
 			sessionID:    "abc",
 			sessionTitle: "test",
-			want:         "agent-deck-test-abc",
+			want:         "arnold-test-abc",
 		},
 		{
 			name:         "long title truncated",
 			sessionID:    "12345678",
 			sessionTitle: "this-is-a-very-long-session-title-that-exceeds-the-limit",
-			want:         "agent-deck-this-is-a-very-long-session-ti-12345678",
+			want:         "arnold-this-is-a-very-long-session-ti-12345678",
 		},
 	}
 
@@ -112,16 +111,15 @@ func TestNewContainerConfig_Environment(t *testing.T) {
 	extra := map[string]string{"MY_VAR": "my_value"}
 	cfg := NewContainerConfig("/project", WithEnvironment(extra))
 
-	// Always has IS_SANDBOX.
-	require.Equal(t, "1", cfg.environment["IS_SANDBOX"])
 	// Extra env passed through.
 	require.Equal(t, "my_value", cfg.environment["MY_VAR"])
+	// TERM is set by default.
+	require.Equal(t, "xterm-256color", cfg.environment["TERM"])
 }
 
 func TestWithEnvironment_NilMap(t *testing.T) {
 	t.Parallel()
 
-	// WithEnvironment should not panic when applied to a zero-value config.
 	cfg := &ContainerConfig{}
 	opt := WithEnvironment(map[string]string{"KEY": "val"})
 	opt(cfg)
@@ -150,42 +148,22 @@ func TestDefaultImage(t *testing.T) {
 	require.Equal(t, defaultImage, DefaultImage())
 }
 
-func TestAgentConfigMounts_AllTools(t *testing.T) {
+func TestAgentConfigMounts_ClaudeOnly(t *testing.T) {
 	t.Parallel()
 
 	mounts := AgentConfigMounts()
-	require.GreaterOrEqual(t, len(mounts), 4)
-	for _, m := range mounts {
-		t.Run(m.hostRel, func(t *testing.T) {
-			t.Parallel()
-			require.NotEmpty(t, m.hostRel)
-			require.NotEmpty(t, m.containerSuffix)
-			// All tools must skip sandbox to prevent recursive copies.
-			require.Contains(t, m.skipEntries, "sandbox")
-		})
-	}
-}
-
-func TestAgentConfigMounts_OpenCodePathsMounted(t *testing.T) {
-	t.Parallel()
-
-	mounts := AgentConfigMounts()
-	seen := map[string]bool{}
-	for _, m := range mounts {
-		seen[m.hostRel] = true
-	}
-
-	require.True(t, seen[".local/share/opencode"])
-	require.True(t, seen[".local/state/opencode"])
-	require.True(t, seen[".config/opencode"])
+	// Arnold only has Claude config mount.
+	require.Len(t, mounts, 1)
+	require.Equal(t, ".claude", mounts[0].hostRel)
+	require.Contains(t, mounts[0].skipEntries, "sandbox")
 }
 
 func TestIsManagedContainer(t *testing.T) {
 	t.Parallel()
 
-	require.True(t, IsManagedContainer("agent-deck-a1b2c3d4"))
+	require.True(t, IsManagedContainer("arnold-a1b2c3d4"))
 	require.False(t, IsManagedContainer("my-production-container"))
-	require.False(t, IsManagedContainer("agent-deck-"))
+	require.False(t, IsManagedContainer("arnold-"))
 }
 
 func TestExecPrefixWithEnv(t *testing.T) {
@@ -197,7 +175,6 @@ func TestExecPrefixWithEnv(t *testing.T) {
 		"A_VAR": "a",
 	}
 	prefix := c.ExecPrefixWithEnv(env)
-	// Keys sorted: A_VAR before B_VAR. Values plain (no shell quoting).
 	require.Equal(t, []string{
 		"docker", "exec", "-it",
 		"-e", "A_VAR=a",
@@ -222,7 +199,6 @@ func TestExecPrefixWithEnv_SpecialChars(t *testing.T) {
 		"VAR": `value with "quotes" and $dollar`,
 	}
 	prefix := c.ExecPrefixWithEnv(env)
-	// Values are plain — shell quoting happens once at the wrapIgnoreSuspend boundary.
 	require.Equal(t, []string{
 		"docker", "exec", "-it",
 		"-e", `VAR=value with "quotes" and $dollar`,
@@ -237,7 +213,6 @@ func TestNewContainerConfig_GitConfig(t *testing.T) {
 		WithGitConfig("/home/user/.gitconfig"),
 	)
 
-	// Project mount + gitconfig mount.
 	require.Len(t, cfg.volumes, 2)
 	require.Equal(t, "/home/user/.gitconfig", cfg.volumes[1].hostPath)
 	require.Equal(t, containerHome+"/.gitconfig", cfg.volumes[1].containerPath)
@@ -251,11 +226,10 @@ func TestNewContainerConfig_GitConfig_Empty(t *testing.T) {
 		WithGitConfig(""),
 	)
 
-	// Only the project mount when path is empty.
 	require.Len(t, cfg.volumes, 1)
 }
 
-func TestNewContainerConfig_SSH(t *testing.T) {
+func TestNewContainerConfig_SSH_ArnoldStagingPath(t *testing.T) {
 	t.Parallel()
 
 	cfg := NewContainerConfig("/project",
@@ -264,7 +238,8 @@ func TestNewContainerConfig_SSH(t *testing.T) {
 
 	require.Len(t, cfg.volumes, 2)
 	require.Equal(t, "/home/user/.ssh", cfg.volumes[1].hostPath)
-	require.Equal(t, containerHome+"/.ssh", cfg.volumes[1].containerPath)
+	// Arnold mounts SSH at /root/.ssh-keys for the entrypoint to copy.
+	require.Equal(t, "/root/.ssh-keys", cfg.volumes[1].containerPath)
 	require.True(t, cfg.volumes[1].readOnly)
 }
 
@@ -285,114 +260,13 @@ func TestNewContainerConfig_VolumeIgnores_RejectsTraversal(t *testing.T) {
 		WithVolumeIgnores([]string{"../../etc", "safe", "sub/dir", ".."}),
 	)
 
-	// Only "safe" survives — traversal, separators, and ".." are rejected.
 	require.Equal(t, []string{"/workspace/safe"}, cfg.anonymousVolumes)
-}
-
-func TestNewContainerConfig_ExtraVolumes_BlocksDockerSocket(t *testing.T) {
-	t.Parallel()
-
-	safeDir := t.TempDir()
-	resolvedSafe, err := filepath.EvalSymlinks(safeDir)
-	require.NoError(t, err)
-
-	cfg := NewContainerConfig("/project",
-		WithExtraVolumes(map[string]string{
-			"/var/run/docker.sock": "/var/run/docker.sock",
-			safeDir:                "/container/data",
-		}),
-	)
-
-	// Docker socket is blocked; only safeDir is mounted.
-	require.Len(t, cfg.volumes, 2) // Project mount + safeDir.
-	require.Equal(t, resolvedSafe, cfg.volumes[1].hostPath)
-}
-
-func TestNewContainerConfig_ExtraVolumes_BlocksSystemPaths(t *testing.T) {
-	t.Parallel()
-
-	systemPaths := []string{"/etc/passwd", "/proc/self", "/sys/kernel"}
-	for _, hostPath := range systemPaths {
-		cfg := NewContainerConfig("/project",
-			WithExtraVolumes(map[string]string{
-				hostPath: "/data/target",
-			}),
-		)
-		require.Len(t, cfg.volumes, 1, "expected %s to be blocked", hostPath)
-	}
-
-	secretDirs := []string{"/home/user/.gnupg", "/home/user/.aws"}
-	for _, hostPath := range secretDirs {
-		cfg := NewContainerConfig("/project",
-			WithExtraVolumes(map[string]string{
-				hostPath: "/root/target",
-			}),
-		)
-		// Either fails EvalSymlinks (non-existent on macOS) or blocked by base name.
-		require.Len(t, cfg.volumes, 1, "expected %s to be blocked", hostPath)
-	}
-}
-
-func TestNewContainerConfig_ExtraVolumes_BlocksContainerPaths(t *testing.T) {
-	t.Parallel()
-
-	// Use real directories so EvalSymlinks succeeds on the host side.
-	hostDir := t.TempDir()
-
-	cfg := NewContainerConfig("/project",
-		WithExtraVolumes(map[string]string{
-			hostDir: "/",
-		}),
-	)
-
-	// Container path "/" is blocked — only project mount should remain.
-	require.Len(t, cfg.volumes, 1)
-
-	cfg2 := NewContainerConfig("/project",
-		WithExtraVolumes(map[string]string{
-			hostDir: "/root",
-		}),
-	)
-
-	// Container path "/root" is blocked — only project mount should remain.
-	require.Len(t, cfg2.volumes, 1)
-
-	cfg3 := NewContainerConfig("/project",
-		WithExtraVolumes(map[string]string{
-			hostDir: "/safe/path",
-		}),
-	)
-
-	// "/safe/path" is allowed.
-	require.Len(t, cfg3.volumes, 2)
-	require.Equal(t, "/safe/path", cfg3.volumes[1].containerPath)
-}
-
-func TestNewContainerConfig_IsSandboxNotOverridable(t *testing.T) {
-	t.Parallel()
-
-	extra := map[string]string{"IS_SANDBOX": "0"}
-	cfg := NewContainerConfig("/project", WithEnvironment(extra))
-
-	// IS_SANDBOX must remain "1" regardless of caller-supplied values.
-	require.Equal(t, "1", cfg.environment["IS_SANDBOX"])
-}
-
-func TestCreateNilConfig(t *testing.T) {
-	t.Parallel()
-
-	c := NewContainer("test", "image:latest")
-	_, err := c.Create(t.Context(), nil)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "nil config")
 }
 
 func TestNewContainerConfig_ExtraVolumes(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	resolvedDir, err := filepath.EvalSymlinks(dir)
-	require.NoError(t, err)
 
 	cfg := NewContainerConfig("/project",
 		WithExtraVolumes(map[string]string{
@@ -400,9 +274,9 @@ func TestNewContainerConfig_ExtraVolumes(t *testing.T) {
 		}),
 	)
 
-	// Project mount + extra volume. Host path is the resolved (real) path.
+	// Project mount + extra volume. Arnold has no blocklists.
 	require.Len(t, cfg.volumes, 2)
-	require.Equal(t, resolvedDir, cfg.volumes[1].hostPath)
+	require.Equal(t, filepath.Clean(dir), cfg.volumes[1].hostPath)
 	require.Equal(t, "/container/data", cfg.volumes[1].containerPath)
 }
 
@@ -416,7 +290,6 @@ func TestNewContainerConfig_ExtraVolumes_SkipsEmpty(t *testing.T) {
 		}),
 	)
 
-	// Only the project mount — empty paths are skipped.
 	require.Len(t, cfg.volumes, 1)
 }
 
@@ -424,8 +297,6 @@ func TestNewContainerConfig_ExtraVolumes_RejectsRelativePaths(t *testing.T) {
 	t.Parallel()
 
 	safeDir := t.TempDir()
-	resolvedSafe, err := filepath.EvalSymlinks(safeDir)
-	require.NoError(t, err)
 
 	cfg := NewContainerConfig("/project",
 		WithExtraVolumes(map[string]string{
@@ -435,8 +306,7 @@ func TestNewContainerConfig_ExtraVolumes_RejectsRelativePaths(t *testing.T) {
 		}),
 	)
 
-	// All rejected: relative host paths and relative container paths.
-	require.Len(t, cfg.volumes, 1) // Only project mount.
+	require.Len(t, cfg.volumes, 1)
 
 	cfg2 := NewContainerConfig("/project",
 		WithExtraVolumes(map[string]string{
@@ -444,125 +314,53 @@ func TestNewContainerConfig_ExtraVolumes_RejectsRelativePaths(t *testing.T) {
 		}),
 	)
 
-	// Absolute→absolute pair survives. Host path is the resolved (real) path.
 	require.Len(t, cfg2.volumes, 2)
-	require.Equal(t, resolvedSafe, cfg2.volumes[1].hostPath)
 	require.Equal(t, "/safe/container", cfg2.volumes[1].containerPath)
 }
 
-func TestNewContainerConfig_ExtraVolumes_BlocksContainerPrefixes(t *testing.T) {
+func TestRunCommand_NilConfig(t *testing.T) {
 	t.Parallel()
 
-	hostDir := t.TempDir()
+	c := NewContainer("test", "image:latest")
+	args := c.RunCommand(nil)
+	require.Nil(t, args)
+}
 
-	// All container prefixes (/usr, /bin, /sbin, /lib) should be blocked.
-	for _, containerPath := range []string{"/usr/local/bin", "/bin/custom", "/sbin/tool", "/lib/x86_64"} {
-		cfg := NewContainerConfig("/project",
-			WithExtraVolumes(map[string]string{
-				hostDir: containerPath,
-			}),
-		)
-		require.Len(t, cfg.volumes, 1, "expected %s to be blocked", containerPath)
+func TestRunCommand_Basic(t *testing.T) {
+	t.Parallel()
+
+	c := NewContainer("arnold-test-123", "arnold-claude:latest")
+	cfg := NewContainerConfig("/project")
+	args := c.RunCommand(cfg, "claude", "--dangerously-skip-permissions")
+
+	require.Contains(t, args, "run")
+	require.Contains(t, args, "-it")
+	require.Contains(t, args, "--rm")
+	require.Contains(t, args, "--privileged")
+	require.Contains(t, args, "arnold-test-123")
+	require.Contains(t, args, "arnold-claude:latest")
+	require.Contains(t, args, "claude")
+	require.Contains(t, args, "--dangerously-skip-permissions")
+}
+
+func TestRunCommand_WithEnv(t *testing.T) {
+	t.Parallel()
+
+	c := NewContainer("arnold-test", "arnold-claude:latest")
+	cfg := NewContainerConfig("/project",
+		WithEnvironment(map[string]string{"MY_VAR": "hello"}),
+	)
+	args := c.RunCommand(cfg)
+
+	// Check env vars are in the args.
+	found := false
+	for i, arg := range args {
+		if arg == "-e" && i+1 < len(args) && args[i+1] == "MY_VAR=hello" {
+			found = true
+			break
+		}
 	}
-
-	// /workspace/data should be allowed.
-	cfg := NewContainerConfig("/project",
-		WithExtraVolumes(map[string]string{
-			hostDir: "/workspace/data",
-		}),
-	)
-	require.Len(t, cfg.volumes, 2)
-	require.Equal(t, "/workspace/data", cfg.volumes[1].containerPath)
-}
-
-func TestNewContainerConfig_ExtraVolumes_UsesResolvedPaths(t *testing.T) {
-	t.Parallel()
-
-	// Use a real directory so EvalSymlinks succeeds.
-	dir := t.TempDir()
-
-	cfg := NewContainerConfig("/project",
-		WithExtraVolumes(map[string]string{
-			dir: "/container/./data",
-		}),
-	)
-
-	// Resolved host path and cleaned container path are used in the mount.
-	require.Len(t, cfg.volumes, 2)
-	require.Equal(t, "/container/data", cfg.volumes[1].containerPath)
-}
-
-func TestNewContainerConfig_ExtraVolumes_ResolvesSymlinks(t *testing.T) {
-	t.Parallel()
-
-	// Create a real directory and a symlink pointing to it.
-	targetDir := t.TempDir()
-	linkDir := t.TempDir()
-	link := filepath.Join(linkDir, "link")
-	require.NoError(t, os.Symlink(targetDir, link))
-
-	cfg := NewContainerConfig("/project",
-		WithExtraVolumes(map[string]string{
-			link: "/container/data",
-		}),
-	)
-
-	// The resolved (real) path should be mounted, not the symlink.
-	// On macOS, t.TempDir() returns /var/folders/... which EvalSymlinks resolves
-	// to /private/var/folders/..., so compare against the resolved target.
-	resolvedTarget, err := filepath.EvalSymlinks(targetDir)
-	require.NoError(t, err)
-	require.Len(t, cfg.volumes, 2)
-	require.Equal(t, resolvedTarget, cfg.volumes[1].hostPath)
-}
-
-func TestNewContainerConfig_ExtraVolumes_SymlinkBypassBlocked(t *testing.T) {
-	t.Parallel()
-
-	// Create a symlink pointing to a blocked path (/etc is always blocked).
-	dir := t.TempDir()
-	link := filepath.Join(dir, "sneaky-link")
-	require.NoError(t, os.Symlink("/etc", link))
-
-	cfg := NewContainerConfig("/project",
-		WithExtraVolumes(map[string]string{
-			link: "/container/etc",
-		}),
-	)
-
-	// Only the project volume should exist — symlink to blocked path is rejected.
-	require.Len(t, cfg.volumes, 1)
-}
-
-func TestNewContainerConfig_ExtraVolumes_BrokenSymlinkRejected(t *testing.T) {
-	t.Parallel()
-
-	// Create a symlink pointing to a non-existent target.
-	dir := t.TempDir()
-	link := filepath.Join(dir, "broken-link")
-	require.NoError(t, os.Symlink("/nonexistent/path", link))
-
-	cfg := NewContainerConfig("/project",
-		WithExtraVolumes(map[string]string{
-			link: "/container/data",
-		}),
-	)
-
-	// Only the project volume should exist — broken symlink is rejected.
-	require.Len(t, cfg.volumes, 1)
-}
-
-func TestNewContainerConfig_EnvironmentValues(t *testing.T) {
-	t.Parallel()
-
-	cfg := NewContainerConfig("/project",
-		WithEnvironment(map[string]string{
-			"CUSTOM_VAR": "custom_value",
-		}),
-	)
-
-	require.Equal(t, "1", cfg.environment["IS_SANDBOX"])
-	require.Equal(t, "custom_value", cfg.environment["CUSTOM_VAR"])
+	require.True(t, found, "expected MY_VAR=hello in args")
 }
 
 func TestNewContainerConfig_Worktree(t *testing.T) {
@@ -572,10 +370,8 @@ func TestNewContainerConfig_Worktree(t *testing.T) {
 		WithWorktree("/repo-root", "worktrees/feature-x"),
 	)
 
-	// Project mount replaced with repo root.
 	require.Equal(t, "/repo-root", cfg.volumes[0].hostPath)
 	require.Equal(t, containerWorkDir, cfg.volumes[0].containerPath)
-	// Working dir adjusted.
 	require.Equal(t, "/workspace/worktrees/feature-x", cfg.workingDir)
 }
 
@@ -587,7 +383,6 @@ func TestNewContainerConfig_Worktree_NoRelativePath(t *testing.T) {
 	)
 
 	require.Equal(t, "/repo-root", cfg.volumes[0].hostPath)
-	// Working dir unchanged when no relative path.
 	require.Equal(t, containerWorkDir, cfg.workingDir)
 }
 
@@ -597,13 +392,10 @@ func TestNewContainerConfig_ContainerHome(t *testing.T) {
 	cfg := NewContainerConfig("/project",
 		WithContainerHome("/home/app"),
 		WithGitConfig("/home/user/.gitconfig"),
-		WithSSH("/home/user/.ssh"),
 	)
 
-	// gitconfig and SSH should use custom home, not /root.
-	require.Len(t, cfg.volumes, 3) // project + gitconfig + ssh.
+	require.Len(t, cfg.volumes, 2)
 	require.Equal(t, "/home/app/.gitconfig", cfg.volumes[1].containerPath)
-	require.Equal(t, "/home/app/.ssh", cfg.volumes[2].containerPath)
 }
 
 func TestNewContainerConfig_ContainerHome_Default(t *testing.T) {
@@ -611,6 +403,7 @@ func TestNewContainerConfig_ContainerHome_Default(t *testing.T) {
 
 	cfg := NewContainerConfig("/project")
 	require.Equal(t, containerHome, cfg.containerHome)
+	require.Equal(t, "/home/arnold", cfg.containerHome)
 }
 
 func TestNewContainerConfig_EmptyProjectPath(t *testing.T) {
@@ -618,8 +411,88 @@ func TestNewContainerConfig_EmptyProjectPath(t *testing.T) {
 
 	cfg := NewContainerConfig("")
 
-	// No project mount when path is empty.
 	require.Empty(t, cfg.volumes)
+}
+
+func TestNewContainerConfig_DefaultTERM(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewContainerConfig("/project")
+	require.Equal(t, "xterm-256color", cfg.environment["TERM"])
+}
+
+func TestWithArnoldAuth(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewContainerConfig("/project",
+		WithArnoldAuth("oauth-creds-json", "sk-ant-123", "ghp_token"),
+	)
+
+	require.Equal(t, "oauth-creds-json", cfg.environment["CLAUDE_CREDENTIALS"])
+	require.Equal(t, "sk-ant-123", cfg.environment["ANTHROPIC_API_KEY"])
+	require.Equal(t, "ghp_token", cfg.environment["GH_TOKEN"])
+}
+
+func TestWithArnoldAuth_Empty(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewContainerConfig("/project",
+		WithArnoldAuth("", "", ""),
+	)
+
+	_, hasCreds := cfg.environment["CLAUDE_CREDENTIALS"]
+	_, hasKey := cfg.environment["ANTHROPIC_API_KEY"]
+	_, hasGH := cfg.environment["GH_TOKEN"]
+	require.False(t, hasCreds)
+	require.False(t, hasKey)
+	require.False(t, hasGH)
+}
+
+func TestWithCopyWorkspace(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewContainerConfig("/home/user/myrepo",
+		WithCopyWorkspace("myrepo"),
+	)
+
+	// Project mount should be converted to /workspace-src:ro.
+	require.Len(t, cfg.volumes, 1)
+	require.Equal(t, "/home/user/myrepo", cfg.volumes[0].hostPath)
+	require.Equal(t, "/workspace-src", cfg.volumes[0].containerPath)
+	require.True(t, cfg.volumes[0].readOnly)
+
+	// Env vars set for entrypoint.
+	require.Equal(t, "1", cfg.environment["ARNOLD_COPY_WORKSPACE"])
+	require.Equal(t, "myrepo", cfg.environment["WORKSPACE_NAME"])
+
+	// Working dir adjusted.
+	require.Equal(t, "/workspace/myrepo", cfg.workingDir)
+}
+
+func TestWithGitIdentity(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewContainerConfig("/project",
+		WithGitIdentity("Arnold", "arnold@example.com"),
+	)
+
+	require.Equal(t, "Arnold", cfg.environment["GIT_USER_NAME"])
+	require.Equal(t, "arnold@example.com", cfg.environment["GIT_USER_EMAIL"])
+}
+
+func TestWithClaudeConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewContainerConfig("/project",
+		WithClaudeConfig("/home/user/.claude", "/home/user/.claude.json"),
+	)
+
+	// Two additional mounts for Claude config.
+	require.Len(t, cfg.volumes, 3)
+	require.Equal(t, "/tmp/.claude-host", cfg.volumes[1].containerPath)
+	require.True(t, cfg.volumes[1].readOnly)
+	require.Equal(t, "/tmp/.claude.json", cfg.volumes[2].containerPath)
+	require.True(t, cfg.volumes[2].readOnly)
 }
 
 func TestShellJoinArgs(t *testing.T) {
@@ -689,28 +562,4 @@ func TestShellJoinArgs(t *testing.T) {
 			require.Equal(t, tc.want, got)
 		})
 	}
-}
-
-func TestNewContainerConfig_SetsHOME(t *testing.T) {
-	t.Parallel()
-
-	cfg := NewContainerConfig("/project")
-	require.Equal(t, containerHome, cfg.environment["HOME"])
-}
-
-func TestNewContainerConfig_HOMERespectsContainerHome(t *testing.T) {
-	t.Parallel()
-
-	cfg := NewContainerConfig("/project", WithContainerHome("/home/app"))
-	require.Equal(t, "/home/app", cfg.environment["HOME"])
-}
-
-func TestNewContainerConfig_HOMENotOverridable(t *testing.T) {
-	t.Parallel()
-
-	cfg := NewContainerConfig("/project",
-		WithEnvironment(map[string]string{"HOME": "/wrong"}),
-	)
-	// HOME must be set to containerHome, not caller-supplied value.
-	require.Equal(t, containerHome, cfg.environment["HOME"])
 }
