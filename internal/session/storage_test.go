@@ -273,7 +273,7 @@ func TestStorageSaveWithGroups_PersistsSandboxConfig(t *testing.T) {
 			Status:           StatusIdle,
 			CreatedAt:        time.Now(),
 			Sandbox:          &SandboxConfig{Enabled: true, Image: "ghcr.io/example/sandbox:latest", CPULimit: &cpu, MemoryLimit: &mem},
-			SandboxContainer: "agent-deck-sandbox-sandboxed-1",
+			SandboxContainer: "arnold-sandbox-sandboxed-1",
 		},
 	}
 
@@ -294,8 +294,8 @@ func TestStorageSaveWithGroups_PersistsSandboxConfig(t *testing.T) {
 	if lite[0].Sandbox.Image != "ghcr.io/example/sandbox:latest" {
 		t.Fatalf("sandbox image = %q, want ghcr.io/example/sandbox:latest", lite[0].Sandbox.Image)
 	}
-	if lite[0].SandboxContainer != "agent-deck-sandbox-sandboxed-1" {
-		t.Fatalf("sandbox container = %q, want agent-deck-sandbox-sandboxed-1", lite[0].SandboxContainer)
+	if lite[0].SandboxContainer != "arnold-sandbox-sandboxed-1" {
+		t.Fatalf("sandbox container = %q, want arnold-sandbox-sandboxed-1", lite[0].SandboxContainer)
 	}
 
 	loaded, _, err := s.LoadWithGroups()
@@ -311,8 +311,8 @@ func TestStorageSaveWithGroups_PersistsSandboxConfig(t *testing.T) {
 	if loaded[0].Sandbox == nil || loaded[0].Sandbox.Image != "ghcr.io/example/sandbox:latest" {
 		t.Fatalf("loaded sandbox image = %#v", loaded[0].Sandbox)
 	}
-	if loaded[0].SandboxContainer != "agent-deck-sandbox-sandboxed-1" {
-		t.Fatalf("loaded sandbox container = %q, want agent-deck-sandbox-sandboxed-1", loaded[0].SandboxContainer)
+	if loaded[0].SandboxContainer != "arnold-sandbox-sandboxed-1" {
+		t.Fatalf("loaded sandbox container = %q, want arnold-sandbox-sandboxed-1", loaded[0].SandboxContainer)
 	}
 }
 

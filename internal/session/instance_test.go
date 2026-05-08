@@ -2532,11 +2532,11 @@ func TestWrapIgnoreSuspend(t *testing.T) {
 	t.Run("wraps sandbox docker exec command", func(t *testing.T) {
 		t.Parallel()
 		// docker exec with shell-quoted env value from buildExecCommand/ShellJoinArgs.
-		sandboxCmd := `docker exec -it -e TERM=xterm-256color agent-deck-a1b2c3d4 claude --session-id abc`
+		sandboxCmd := `docker exec -it -e TERM=xterm-256color arnold-a1b2c3d4 claude --session-id abc`
 		wrapped := wrapIgnoreSuspend(sandboxCmd)
 		// Single bash -c layer wrapping the shell-quoted docker exec.
 		require.Equal(t,
-			`bash -c 'stty susp undef; docker exec -it -e TERM=xterm-256color agent-deck-a1b2c3d4 claude --session-id abc'`,
+			`bash -c 'stty susp undef; docker exec -it -e TERM=xterm-256color arnold-a1b2c3d4 claude --session-id abc'`,
 			wrapped,
 		)
 	})

@@ -22,7 +22,7 @@ import (
 
 // Container manages a single Docker container lifecycle.
 type Container struct {
-	// name is the container name (e.g. "agent-deck-a1b2c3d4").
+	// name is the container name (e.g. "arnold-a1b2c3d4").
 	name string
 
 	// image is the Docker image to use.
@@ -45,7 +45,7 @@ func FromName(name string) *Container {
 }
 
 // GenerateName builds a container name from a session ID and human-readable title.
-// Format: agent-deck-{title}-{id8}. The 8-char ID suffix guarantees uniqueness;
+// Format: arnold-{title}-{id8}. The 8-char ID suffix guarantees uniqueness;
 // the title is just for human readability in docker ps output.
 func GenerateName(sessionID string, sessionTitle string) string {
 	const idLen = 8 // First 8 chars of the session UUID — enough for uniqueness.

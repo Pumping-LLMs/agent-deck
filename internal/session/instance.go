@@ -281,7 +281,7 @@ type SandboxConfig struct {
 	// Enabled indicates the session runs inside a container.
 	Enabled bool `json:"enabled"`
 
-	// Image is the Docker image name (e.g. "ghcr.io/asheshgoplani/agent-deck-sandbox:latest").
+	// Image is the Docker image name (e.g. "arnold-claude:latest").
 	Image string `json:"image"`
 
 	// CPULimit is the optional CPU quota for the container (e.g. "2.0").
