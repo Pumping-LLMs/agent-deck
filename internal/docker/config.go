@@ -2,7 +2,6 @@ package docker
 
 import (
 	"fmt"
-	"log/slog"
 	"maps"
 	"path/filepath"
 	"slices"
@@ -10,26 +9,24 @@ import (
 )
 
 const (
-	// containerHome is the home directory inside the container.
-	// Tools are installed here at build time (e.g. /root/.local/bin/claude).
-	// The container runs as the host user (--user uid:gid), not root —
-	// /root is chmod 755 in the Dockerfile to allow traversal.
-	containerHome = "/root"
+	// containerHome is the home directory inside the Arnold container.
+	// The arnold user is created in the Dockerfile; the entrypoint drops
+	// privileges from root to arnold after setup.
+	containerHome = "/home/arnold"
 
 	// containerNamePrefix is the expected prefix for managed containers.
-	containerNamePrefix = "agent-deck-"
+	containerNamePrefix = "arnold-"
 
 	// containerWorkDir is the workspace inside the container.
 	containerWorkDir = "/workspace"
 
-	// defaultImage is the sandbox image when none is specified.
-	// Uses :latest because this is a locally-built image (docker build -t agent-deck-sandbox sandbox/).
-	// Users who want reproducibility can pin a custom image via config (sandbox_image = "myimage:v1.2").
-	defaultImage = "agent-deck-sandbox:latest"
+	// defaultImage is the Arnold Docker image (locally built).
+	defaultImage = "arnold-claude:latest"
 )
 
-// agentConfigMounts defines all tool config directories and how they are handled.
-// Adding a new tool requires only a new entry here — no code changes needed.
+// agentConfigMounts defines Claude config directories synced into containers.
+// Arnold's entrypoint handles auth (OAuth/API key) via env vars, so only
+// plugins and skills need host-to-container sync.
 var agentConfigMounts = []AgentConfigMount{
 	{
 		hostRel:         ".claude",
@@ -43,74 +40,11 @@ var agentConfigMounts = []AgentConfigMount{
 			filename: ".credentials.json",
 		},
 	},
-	{
-		hostRel:         ".local/share/opencode",
-		containerSuffix: ".local/share/opencode",
-		skipEntries:     []string{"sandbox"},
-	},
-	{
-		hostRel:         ".local/state/opencode",
-		containerSuffix: ".local/state/opencode",
-		skipEntries:     []string{"sandbox"},
-	},
-	{
-		hostRel:         ".config/opencode",
-		containerSuffix: ".config/opencode",
-		skipEntries:     []string{"sandbox"},
-	},
-	{
-		hostRel:         ".codex",
-		containerSuffix: ".codex",
-		skipEntries:     []string{"sandbox"},
-	},
-	{
-		hostRel:         ".gemini",
-		containerSuffix: ".gemini",
-		skipEntries:     []string{"sandbox"},
-	},
 }
 
-// Mount path blocklists — prevent accidental exposure of sensitive host and container paths.
-// The agent inside the container has full shell access by design; these blocklists protect
-// against misconfiguration (e.g. mounting /etc or the Docker socket), not against the agent itself.
-
-// blockedContainerPaths are exact container paths that must not be overwritten by user mounts.
-var blockedContainerPaths = []string{
-	"/",
-	"/root",
-	"/root/.ssh",
-}
-
-// blockedContainerPrefixes are container path prefixes that must not be overwritten.
-// Covers system, binary, and library directories to prevent subverting tool execution.
-var blockedContainerPrefixes = []string{
-	"/bin",
-	"/etc",
-	"/lib",
-	"/lib64",
-	"/proc",
-	"/sbin",
-	"/sys",
-	"/usr",
-}
-
-// blockedHostPaths are host paths that must never be mounted into sandbox containers.
-var blockedHostPaths = []string{
-	"/var/run/docker.sock",
-	"/run/docker.sock",
-}
-
-// blockedHostPrefixes are host path prefixes that must never be mounted.
-// Blocking these prevents accidental exposure of system config and kernel interfaces.
-// Includes /private/etc because macOS resolves /etc → /private/etc via symlinks.
-// /var is intentionally excluded — the Docker socket (/var/run/docker.sock) is blocked
-// by exact match in blockedHostPaths, and /var/folders is the macOS temp directory.
-var blockedHostPrefixes = []string{
-	"/etc",
-	"/private/etc",
-	"/proc",
-	"/sys",
-}
+// Arnold runs with --privileged and a trusted entrypoint, so no mount
+// blocklists are needed. The container is ephemeral (--rm) and isolated
+// by design through copy-on-write workspace mounting.
 
 // keychainEntry describes a macOS Keychain credential to extract.
 type keychainEntry struct {
@@ -204,8 +138,7 @@ func AgentConfigMounts() []AgentConfigMount {
 	return slices.Clone(agentConfigMounts)
 }
 
-// WithContainerHome overrides the default container home directory (/root).
-// Use this for non-root images where the home directory differs.
+// WithContainerHome overrides the default container home directory.
 func WithContainerHome(home string) ContainerConfigOption {
 	return func(cfg *ContainerConfig) {
 		if home != "" {
@@ -214,7 +147,83 @@ func WithContainerHome(home string) ContainerConfigOption {
 	}
 }
 
+// WithArnoldAuth sets Arnold-style authentication via environment variables.
+// The entrypoint reads these and writes credentials/config files.
+func WithArnoldAuth(credentials string, apiKey string, ghToken string) ContainerConfigOption {
+	return func(cfg *ContainerConfig) {
+		if credentials != "" {
+			cfg.environment["CLAUDE_CREDENTIALS"] = credentials
+		}
+		if apiKey != "" {
+			cfg.environment["ANTHROPIC_API_KEY"] = apiKey
+		}
+		if ghToken != "" {
+			cfg.environment["GH_TOKEN"] = ghToken
+		}
+	}
+}
+
+// WithCopyWorkspace enables Arnold's copy-on-write workspace mode.
+// The project is mounted read-only at /workspace-src and the entrypoint
+// copies it to /workspace/<name> so edits don't affect the host.
+func WithCopyWorkspace(repoName string) ContainerConfigOption {
+	return func(cfg *ContainerConfig) {
+		cfg.environment["ARNOLD_COPY_WORKSPACE"] = "1"
+		cfg.environment["WORKSPACE_NAME"] = repoName
+		// Replace the default rw mount with a ro mount at /workspace-src
+		newVols := make([]VolumeMount, 0, len(cfg.volumes))
+		for _, v := range cfg.volumes {
+			if v.containerPath == containerWorkDir {
+				newVols = append(newVols, VolumeMount{
+					hostPath:      v.hostPath,
+					containerPath: "/workspace-src",
+					readOnly:      true,
+				})
+			} else {
+				newVols = append(newVols, v)
+			}
+		}
+		cfg.volumes = newVols
+		cfg.workingDir = containerWorkDir + "/" + repoName
+	}
+}
+
+// WithGitIdentity sets git user name and email via env vars for the entrypoint.
+func WithGitIdentity(name string, email string) ContainerConfigOption {
+	return func(cfg *ContainerConfig) {
+		if name != "" {
+			cfg.environment["GIT_USER_NAME"] = name
+		}
+		if email != "" {
+			cfg.environment["GIT_USER_EMAIL"] = email
+		}
+	}
+}
+
+// WithClaudeConfig mounts the host ~/.claude directory read-only so the
+// entrypoint can copy plugins, skills, and settings into the container.
+func WithClaudeConfig(claudeDir string, claudeJSON string) ContainerConfigOption {
+	return func(cfg *ContainerConfig) {
+		if claudeDir != "" {
+			cfg.volumes = append(cfg.volumes, VolumeMount{
+				hostPath:      claudeDir,
+				containerPath: "/tmp/.claude-host",
+				readOnly:      true,
+			})
+		}
+		if claudeJSON != "" {
+			cfg.volumes = append(cfg.volumes, VolumeMount{
+				hostPath:      claudeJSON,
+				containerPath: "/tmp/.claude.json",
+				readOnly:      true,
+			})
+		}
+	}
+}
+
 // WithGitConfig mounts the host gitconfig file read-only inside the container.
+// Arnold's entrypoint also supports GIT_USER_NAME/GIT_USER_EMAIL env vars
+// via WithGitIdentity, which takes precedence.
 func WithGitConfig(path string) ContainerConfigOption {
 	return func(cfg *ContainerConfig) {
 		if path == "" {
@@ -228,7 +237,8 @@ func WithGitConfig(path string) ContainerConfigOption {
 	}
 }
 
-// WithSSH mounts the host ~/.ssh directory read-only inside the container.
+// WithSSH mounts the host ~/.ssh directory read-only at Arnold's SSH staging path.
+// The entrypoint copies keys to /home/arnold/.ssh with correct permissions.
 func WithSSH(path string) ContainerConfigOption {
 	return func(cfg *ContainerConfig) {
 		if path == "" {
@@ -236,7 +246,7 @@ func WithSSH(path string) ContainerConfigOption {
 		}
 		cfg.volumes = append(cfg.volumes, VolumeMount{
 			hostPath:      path,
-			containerPath: cfg.containerHome + "/.ssh",
+			containerPath: "/root/.ssh-keys",
 			readOnly:      true,
 		})
 	}
@@ -285,11 +295,7 @@ func WithWorktree(repoRoot string, relativePath string) ContainerConfigOption {
 }
 
 // WithExtraVolumes adds user-configured bind mounts (host → container path).
-// Both paths must be absolute. Host paths are resolved through EvalSymlinks to
-// prevent symlink-based blocklist bypass (e.g. /home/user/link → /var/run/docker.sock).
-// Host paths in blockedHostPaths and blockedHostPrefixes are rejected.
-// Container paths in blockedContainerPaths and blockedContainerPrefixes
-// are rejected to prevent overwriting critical paths.
+// Both paths must be absolute. Arnold runs --privileged so no blocklists apply.
 func WithExtraVolumes(volumes map[string]string) ContainerConfigOption {
 	return func(cfg *ContainerConfig) {
 		for host, container := range volumes {
@@ -300,39 +306,12 @@ func WithExtraVolumes(volumes map[string]string) ContainerConfigOption {
 			if !filepath.IsAbs(cleanHost) {
 				continue
 			}
-			// Resolve symlinks so blocklist checks apply to the real path.
-			resolvedHost, err := filepath.EvalSymlinks(cleanHost)
-			if err != nil {
-				slog.Warn("Skipping extra volume (cannot resolve symlink)", "path", cleanHost, "error", err)
-				continue
-			}
 			cleanContainer := filepath.Clean(container)
 			if !filepath.IsAbs(cleanContainer) {
 				continue
 			}
-			// Check both the original clean path and the resolved path against
-			// blocklists. On macOS, EvalSymlinks resolves /etc → /private/etc and
-			// /var → /private/var, so checking only the resolved path would miss
-			// the blocklist. Checking both catches the bypass in either direction.
-			if slices.Contains(blockedHostPaths, cleanHost) || slices.Contains(blockedHostPaths, resolvedHost) {
-				continue
-			}
-			if isBlockedPrefix(cleanHost, blockedHostPrefixes) || isBlockedPrefix(resolvedHost, blockedHostPrefixes) {
-				continue
-			}
-			// Block home-relative secret directories.
-			base := filepath.Base(resolvedHost)
-			if base == ".gnupg" || base == ".aws" || base == ".azure" || base == ".config" {
-				continue
-			}
-			if slices.Contains(blockedContainerPaths, cleanContainer) {
-				continue
-			}
-			if isBlockedPrefix(cleanContainer, blockedContainerPrefixes) {
-				continue
-			}
 			cfg.volumes = append(cfg.volumes, VolumeMount{
-				hostPath:      resolvedHost,
+				hostPath:      cleanHost,
 				containerPath: cleanContainer,
 			})
 		}
@@ -368,16 +347,6 @@ func WithMultiRepoPaths(paths []string) ContainerConfigOption {
 		cfg.volumes = newVols
 		cfg.workingDir = containerWorkDir
 	}
-}
-
-// isBlockedPrefix returns true if path equals or is a child of any blocked prefix.
-func isBlockedPrefix(path string, prefixes []string) bool {
-	for _, prefix := range prefixes {
-		if path == prefix || strings.HasPrefix(path, prefix+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // WithCPULimit sets the CPU quota for the container (e.g. "2.0").
