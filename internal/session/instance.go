@@ -5912,7 +5912,7 @@ func (i *Instance) OpenContainerShell() (string, error) {
 	}
 
 	// Reuse the GenerateName prefix logic for consistency.
-	tmuxName := "ad-term-" + docker.GenerateName(i.ID, i.Title)[len("agent-deck-"):]
+	tmuxName := "ad-term-" + docker.GenerateName(i.ID, i.Title)[len("arnold-"):]
 
 	// Kill any existing terminal session to prevent orphans from repeated T presses.
 	// Target the same socket the parent agent-deck instance lives on so the
@@ -6056,13 +6056,10 @@ func collectDockerEnvVars(names []string) map[string]string {
 	return env
 }
 
-// ensureSandboxContainer creates and starts the Docker container if needed,
-// then returns the tool command wrapped in "docker exec" and the container name.
-// The userCfg parameter avoids a redundant LoadUserConfig call — the caller
-// (wrapForSandbox) already loaded it.
+// ensureSandboxContainer builds the "docker run" command for an ephemeral Arnold container.
+// Arnold uses docker run -it --rm with a custom entrypoint instead of
+// create + start + exec. The container lives as long as the Claude session.
 func ensureSandboxContainer(inst *Instance, userCfg *UserConfig, toolCommand string) (string, string, error) {
-	// Use a bounded context to prevent indefinite hangs if Docker is unresponsive.
-	// Image pulls may take longer, but CheckAvailability/Exists/Create/Start should be fast.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -6077,109 +6074,24 @@ func ensureSandboxContainer(inst *Instance, userCfg *UserConfig, toolCommand str
 	containerName := docker.GenerateName(inst.ID, inst.Title)
 	ctr := docker.NewContainer(containerName, inst.Sandbox.Image)
 
-	homeDir, homeErr := os.UserHomeDir()
-	if homeErr != nil {
-		sessionLog.Warn("user_home_dir", slog.String("error", homeErr.Error()))
+	cfg := buildArnoldConfig(inst, userCfg)
+
+	// Build the docker run command. The image CMD handles the tool command
+	// (claude --dangerously-skip-permissions), so no toolCommand needed here.
+	runArgs := ctr.RunCommand(cfg)
+	if runArgs == nil {
+		return "", "", fmt.Errorf("failed to build docker run command for %s", containerName)
 	}
 
-	// Skip agent config sync when home directory is unavailable — RefreshAgentConfigs
-	// would produce broken paths rooted at "/" with an empty homeDir.
-	var bindMounts []docker.VolumeMount
-	var homeMounts []docker.VolumeMount
-	if homeDir != "" {
-		bindMounts, homeMounts = docker.RefreshAgentConfigs(homeDir, "")
-	}
-
-	if err := ensureContainerRunning(ctx, inst, ctr, userCfg, homeDir, bindMounts, homeMounts); err != nil {
-		return "", "", err
-	}
-
-	return buildExecCommand(ctr, userCfg, toolCommand), containerName, nil
+	// Prepend "docker" and convert to shell-safe string for tmux.
+	fullArgs := append([]string{"docker"}, runArgs...)
+	return docker.ShellJoinArgs(fullArgs), containerName, nil
 }
 
-// ensureContainerRunning creates and starts the container if it doesn't exist or is stopped.
-func ensureContainerRunning(
-	ctx context.Context,
-	inst *Instance,
-	ctr *docker.Container,
-	userCfg *UserConfig,
-	homeDir string,
-	bindMounts []docker.VolumeMount,
-	homeMounts []docker.VolumeMount,
-) error {
-	exists, err := ctr.Exists(ctx)
-	if err != nil {
-		return fmt.Errorf("checking sandbox container: %w", err)
-	}
-
-	if !exists {
-		cfg := buildSandboxConfig(inst, userCfg, homeDir, bindMounts, homeMounts)
-		if _, createErr := ctr.Create(ctx, cfg); createErr != nil {
-			return fmt.Errorf("creating sandbox container: %w", createErr)
-		}
-	}
-
-	running, err := ctr.IsRunning(ctx)
-	if err != nil {
-		return fmt.Errorf("checking sandbox container status: %w", err)
-	}
-	if !running {
-		if startErr := ctr.Start(ctx); startErr != nil {
-			return fmt.Errorf("starting sandbox container: %w", startErr)
-		}
-	}
-
-	// Migration guard: older containers were created with root-owned tmpfs mounts
-	// for /root/.npm and /root/.cache. With --user uid:gid this causes plugin
-	// bootstrap failures (EACCES mkdir '/root/.npm/_cacache'). Recreate the
-	// container once if those paths are not writable.
-	cacheWritable := sandboxCacheDirsWritable(ctx, ctr)
-	tmpExecutable := sandboxTmpExecutable(ctx, ctr)
-	if !cacheWritable || !tmpExecutable {
-		sessionLog.Warn(
-			"sandbox_recreating_for_runtime_compat",
-			slog.Bool("cache_writable", cacheWritable),
-			slog.Bool("tmp_executable", tmpExecutable),
-		)
-		if rmErr := ctr.Remove(ctx, true); rmErr != nil {
-			return fmt.Errorf("removing incompatible sandbox container: %w", rmErr)
-		}
-		cfg := buildSandboxConfig(inst, userCfg, homeDir, bindMounts, homeMounts)
-		if _, createErr := ctr.Create(ctx, cfg); createErr != nil {
-			return fmt.Errorf("recreating sandbox container: %w", createErr)
-		}
-		if startErr := ctr.Start(ctx); startErr != nil {
-			return fmt.Errorf("starting recreated sandbox container: %w", startErr)
-		}
-	}
-
-	return nil
-}
-
-func sandboxCacheDirsWritable(ctx context.Context, ctr *docker.Container) bool {
-	return sandboxExecProbe(ctx, ctr, "test -w /root/.npm && test -w /root/.cache")
-}
-
-func sandboxTmpExecutable(ctx context.Context, ctr *docker.Container) bool {
-	probe := `f=/tmp/.agent_deck_exec_probe.sh; printf '#!/bin/sh\nexit 0\n' > "$f" && chmod +x "$f" && "$f" >/dev/null 2>&1 && rm -f "$f"`
-	return sandboxExecProbe(ctx, ctr, probe)
-}
-
-func sandboxExecProbe(ctx context.Context, ctr *docker.Container, script string) bool {
-	prefix := ctr.ExecPrefixNonInteractive()
-	args := append(prefix[1:], "bash", "-lc", script)
-	_, err := exec.CommandContext(ctx, prefix[0], args...).CombinedOutput()
-	return err == nil
-}
-
-// buildSandboxConfig assembles the ContainerConfig from session and user settings.
-func buildSandboxConfig(
-	inst *Instance,
-	userCfg *UserConfig,
-	homeDir string,
-	bindMounts []docker.VolumeMount,
-	homeMounts []docker.VolumeMount,
-) *docker.ContainerConfig {
+// buildArnoldConfig assembles the ContainerConfig for an Arnold session.
+// Arnold's entrypoint handles auth (OAuth/API key), SSH key setup, git config,
+// workspace copy-on-write, and plugin path fixing — all via env vars and mounts.
+func buildArnoldConfig(inst *Instance, userCfg *UserConfig) *docker.ContainerConfig {
 	var cpuLimit, memLimit string
 	if inst.Sandbox.CPULimit != nil {
 		cpuLimit = *inst.Sandbox.CPULimit
@@ -6194,43 +6106,73 @@ func buildSandboxConfig(
 		memLimit = userCfg.Docker.MemoryLimit
 	}
 
+	homeDir, _ := os.UserHomeDir()
+
 	configOpts := []docker.ContainerConfigOption{
 		docker.WithCPULimit(cpuLimit),
 		docker.WithMemoryLimit(memLimit),
-		docker.WithAgentConfigs(bindMounts, homeMounts),
+		// Enable copy-on-write: project mounted ro at /workspace-src,
+		// entrypoint copies to /workspace/<name>.
+		docker.WithCopyWorkspace(filepath.Base(inst.ProjectPath)),
 	}
 
-	// Note: Docker.Environment names (e.g. TERM) are NOT forwarded at create time.
-	// They are forwarded at exec time via buildExecCommand with fresh host values.
-	// Only Docker.EnvironmentValues (static key=value pairs) are baked into the container.
-
+	// Arnold auth: read OAuth credentials from macOS Keychain or env,
+	// read GH_TOKEN from env if available.
 	if homeDir != "" {
-		gitconfigPath := filepath.Join(homeDir, ".gitconfig")
-		if _, statErr := os.Stat(gitconfigPath); statErr == nil {
-			configOpts = append(configOpts, docker.WithGitConfig(gitconfigPath))
+		// Mount ~/.claude for plugins/skills/settings
+		claudeDir := filepath.Join(homeDir, ".claude")
+		claudeJSON := filepath.Join(homeDir, ".claude.json")
+		var cDir, cJSON string
+		if _, err := os.Stat(claudeDir); err == nil {
+			cDir = claudeDir
+		}
+		if _, err := os.Stat(claudeJSON); err == nil {
+			cJSON = claudeJSON
+		}
+		configOpts = append(configOpts, docker.WithClaudeConfig(cDir, cJSON))
+
+		// SSH keys
+		if userCfg != nil && userCfg.Docker.MountSSH {
+			sshPath := filepath.Join(homeDir, ".ssh")
+			if _, statErr := os.Stat(sshPath); statErr == nil {
+				configOpts = append(configOpts, docker.WithSSH(sshPath))
+			}
 		}
 	}
 
-	if userCfg != nil && userCfg.Docker.MountSSH && homeDir != "" {
-		sshPath := filepath.Join(homeDir, ".ssh")
-		if _, statErr := os.Stat(sshPath); statErr == nil {
-			configOpts = append(configOpts, docker.WithSSH(sshPath))
+	// Forward Arnold auth env vars from the host.
+	// These are read by the entrypoint to set up credentials.
+	arnoldEnv := make(map[string]string)
+	for _, name := range []string{
+		"CLAUDE_CREDENTIALS", "ANTHROPIC_API_KEY", "GH_TOKEN",
+		"YOUTRACK_URL", "YOUTRACK_TOKEN",
+		"GIT_USER_NAME", "GIT_USER_EMAIL",
+	} {
+		if val, ok := os.LookupEnv(name); ok {
+			arnoldEnv[name] = val
 		}
 	}
-
-	if userCfg != nil && len(userCfg.Docker.VolumeIgnores) > 0 {
-		configOpts = append(configOpts, docker.WithVolumeIgnores(userCfg.Docker.VolumeIgnores))
+	// Also forward terminal env vars.
+	for _, name := range terminalEnvVars {
+		if val, ok := os.LookupEnv(name); ok {
+			arnoldEnv[name] = val
+		}
+	}
+	if len(arnoldEnv) > 0 {
+		configOpts = append(configOpts, docker.WithEnvironment(arnoldEnv))
 	}
 
+	// User-configured extra volumes.
 	if userCfg != nil && len(userCfg.Docker.ExtraVolumes) > 0 {
 		configOpts = append(configOpts, docker.WithExtraVolumes(userCfg.Docker.ExtraVolumes))
 	}
 
+	// User-configured static environment values.
 	if userCfg != nil && len(userCfg.Docker.EnvironmentValues) > 0 {
 		configOpts = append(configOpts, docker.WithEnvironment(userCfg.Docker.EnvironmentValues))
 	}
 
-	// Multi-repo: mount each path under /workspace/<dirname> instead of single project mount.
+	// Multi-repo: mount each path under /workspace/<dirname>.
 	if inst.MultiRepoEnabled {
 		configOpts = append(configOpts, docker.WithMultiRepoPaths(inst.AllProjectPaths()))
 	}
@@ -6238,17 +6180,11 @@ func buildSandboxConfig(
 	return docker.NewContainerConfig(inst.ProjectPath, configOpts...)
 }
 
-// buildExecCommand returns a shell-safe "docker exec ... bash -c toolCommand" string.
-// The two-layer bash -c architecture:
-//  1. Inner: docker exec ... bash -c <toolCommand> — runs the agent command inside
-//     the container, properly shell-quoted by ShellJoinArgs.
-//  2. Outer: wrapIgnoreSuspend wraps the entire string in bash -c with stty susp undef,
-//     which tmux then delivers via its implicit /bin/sh -c.
-//
-// This prevents shell injection: toolCommand (which may contain user-controlled text
-// like session IDs) is passed as a single quoted argument to bash -c inside the container.
-func buildExecCommand(ctr *docker.Container, userCfg *UserConfig, toolCommand string) string {
-	// Always collect terminal env vars; append user-configured env var names.
+// buildRunCommand returns a shell-safe "docker run ..." string for Arnold containers.
+// Used by prepareCommand to build the tmux command.
+func buildRunCommand(ctr *docker.Container, userCfg *UserConfig, toolCommand string) string {
+	// For Arnold, the full docker run command is the command itself.
+	// ExecPrefix is only used for shell access (T key) on running containers.
 	var userNames []string
 	if userCfg != nil {
 		userNames = userCfg.Docker.Environment
@@ -6261,8 +6197,6 @@ func buildExecCommand(ctr *docker.Container, userCfg *UserConfig, toolCommand st
 	} else {
 		prefix = ctr.ExecPrefix()
 	}
-	// Wrap toolCommand in bash -c inside the container so it is passed as a single
-	// shell-quoted argument, preventing injection of shell metacharacters.
 	return docker.ShellJoinArgs(append(prefix, "bash", "-c", toolCommand))
 }
 
