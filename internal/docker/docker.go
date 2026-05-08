@@ -1,21 +1,20 @@
-// Package docker manages container lifecycle for sandboxed agent sessions.
+// Package docker manages container lifecycle for Arnold agent sessions.
+//
+// Arnold uses ephemeral containers: docker run -it --rm with a custom
+// entrypoint that handles auth, SSH, git config, plugin setup, and
+// workspace copy-on-write. The container lives as long as the Claude session.
 //
 // Shell assumptions: commands delivered via tmux traverse two shell layers
 // (tmux's implicit /bin/sh -c and wrapIgnoreSuspend's bash -c). Values in
 // ExecPrefix / ExecPrefixWithEnv are therefore unquoted — quoting is applied
 // once at the wrapIgnoreSuspend boundary.
-//
-// Security: the Docker socket is intentionally NOT mounted into containers.
-// Agents run inside a sandbox with no access to the host Docker daemon.
 package docker
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
-	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -124,49 +123,24 @@ func (c *Container) IsRunning(ctx context.Context) (bool, error) {
 	return strings.TrimSpace(string(out)) == "true", nil
 }
 
-// Create creates the container from the given config without starting it.
-// Returns the container ID on success. If the container already exists,
-// it is treated as a no-op and the existing container ID is returned.
-func (c *Container) Create(ctx context.Context, cfg *ContainerConfig) (string, error) {
+// RunCommand builds the full "docker run" command args for an ephemeral Arnold container.
+// The container runs with --privileged and --rm (auto-cleanup on exit).
+// The entrypoint handles auth, SSH, git config, plugin setup, and workspace copy.
+// Returns the args slice (without "docker" prefix) suitable for exec.Command or ShellJoinArgs.
+func (c *Container) RunCommand(cfg *ContainerConfig, toolCommand ...string) []string {
 	if cfg == nil {
-		return "", fmt.Errorf("cannot create container %s: nil config", c.name)
-	}
-	if c.image == "" {
-		return "", fmt.Errorf("cannot create container %s: no image specified", c.name)
+		return nil
 	}
 
 	args := []string{
-		"create",
+		"run", "-it", "--rm",
 		"--name", c.name,
-		"--label", "managed-by=agent-deck",
-		// Security hardening: drop all capabilities and prevent privilege escalation.
-		"--cap-drop=ALL",
-		"--security-opt=no-new-privileges",
-		// Run as the host user so bind-mounted files (owned by the host UID) are
-		// readable without DAC_OVERRIDE. The UID has no /etc/passwd entry inside
-		// the container, so HOME is set explicitly via environment (see NewContainerConfig).
-		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		// Limit process count to prevent fork bombs.
-		"--pids-limit=4096",
-		// Read-only root filesystem — writable paths are explicitly mounted as tmpfs below.
-		"--read-only",
-		// Keep /tmp executable: OpenCode/OpenTUI loads a native render library
-		// from /tmp via dlopen, which fails when /tmp is mounted noexec.
-		"--tmpfs", "/tmp:rw,exec,nosuid,size=256m",
-		"--tmpfs", "/var/tmp:rw,noexec,nosuid,size=128m",
+		"--label", "managed-by=arnold",
+		"--privileged",
 	}
 
-	// Node.js and npm require writable cache directories. The container runs as
-	// host UID:GID, so set tmpfs ownership explicitly; otherwise Docker creates
-	// root-owned 0755 tmpfs mounts and npm fails with EACCES under /root/.npm.
-	tmpfsUserOpts := fmt.Sprintf("uid=%d,gid=%d", os.Getuid(), os.Getgid())
-	args = append(args,
-		"--tmpfs", "/root/.npm:rw,nosuid,size=256m,"+tmpfsUserOpts+",mode=1777",
-		"--tmpfs", "/root/.cache:rw,nosuid,size=512m,"+tmpfsUserOpts+",mode=1777",
-	)
-
 	if cfg.workingDir != "" {
-		args = append(args, "--workdir", cfg.workingDir)
+		args = append(args, "-e", fmt.Sprintf("CLAUDE_WORKDIR=%s", cfg.workingDir))
 	}
 
 	// Bind mounts.
@@ -183,9 +157,7 @@ func (c *Container) Create(ctx context.Context, cfg *ContainerConfig) (string, e
 		args = append(args, "-v", anonVol)
 	}
 
-	// Environment variables. Values are passed as exec.Command args (not shell-interpreted),
-	// so no shell escaping is needed here — Go's exec.Command passes them directly to the kernel.
-	// Keys sorted for deterministic output and reproducible debugging.
+	// Environment variables. Keys sorted for deterministic output.
 	for _, k := range slices.Sorted(maps.Keys(cfg.environment)) {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, cfg.environment[k]))
 	}
@@ -200,36 +172,11 @@ func (c *Container) Create(ctx context.Context, cfg *ContainerConfig) (string, e
 
 	args = append(args, c.image)
 
-	// Default command keeps the container alive for docker exec.
-	args = append(args, "sleep", "infinity")
+	// Tool command (e.g. "claude", "--dangerously-skip-permissions").
+	// If empty, the image's CMD is used.
+	args = append(args, toolCommand...)
 
-	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
-	if err != nil {
-		// Idempotent: if the container already exists, treat as success.
-		exists, existsErr := c.Exists(ctx)
-		if existsErr == nil && exists {
-			return c.name, nil
-		}
-		return "", fmt.Errorf("creating container %s: %s: %w", c.name, strings.TrimSpace(string(out)), err)
-	}
-	// Always return the container name for consistency — callers should not
-	// depend on the raw docker output format (which is a full container ID).
-	return c.name, nil
-}
-
-// Start starts a stopped container.
-// If the container is already running, this is a no-op.
-func (c *Container) Start(ctx context.Context) error {
-	out, err := exec.CommandContext(ctx, "docker", "start", c.name).CombinedOutput()
-	if err != nil {
-		// Idempotent: if the container is already running, treat as success.
-		running, runErr := c.IsRunning(ctx)
-		if runErr == nil && running {
-			return nil
-		}
-		return fmt.Errorf("starting container %s: %s: %w", c.name, strings.TrimSpace(string(out)), err)
-	}
-	return nil
+	return args
 }
 
 // Stop gracefully stops a running container.
@@ -333,21 +280,17 @@ func EnsureImage(ctx context.Context, image string) error {
 	return pullImage(ctx, image)
 }
 
-// NewContainerConfig creates a ContainerConfig for a sandboxed session.
+// NewContainerConfig creates a ContainerConfig for an Arnold session.
 // projectPath is the host directory to mount as /workspace (must be non-empty).
 // Optional ContainerConfigOption functions customize mounts, limits, and environment.
 func NewContainerConfig(projectPath string, opts ...ContainerConfigOption) *ContainerConfig {
-	if projectPath == "" {
-		slog.Warn("NewContainerConfig called with empty projectPath")
-	}
-
 	cfg := &ContainerConfig{
 		workingDir:    containerWorkDir,
 		containerHome: containerHome,
 		environment:   make(map[string]string),
 	}
 
-	// Mount project directory.
+	// Mount project directory. WithCopyWorkspace will convert this to /workspace-src:ro.
 	if projectPath != "" {
 		cfg.volumes = append(cfg.volumes, VolumeMount{
 			hostPath:      projectPath,
@@ -355,28 +298,24 @@ func NewContainerConfig(projectPath string, opts ...ContainerConfigOption) *Cont
 		})
 	}
 
-	// Apply caller-supplied options.
+	// Apply caller-supplied options (WithCopyWorkspace, WithArnoldAuth, etc.).
 	for _, opt := range opts {
 		opt(cfg)
 	}
 
-	// IS_SANDBOX=1 allows Claude Code to use --dangerously-skip-permissions in container.
-	// Set after options to prevent caller-supplied values from disabling sandbox mode.
-	cfg.environment["IS_SANDBOX"] = "1"
-
-	// HOME must point to the container home directory so tools find their config.
-	// The host UID has no /etc/passwd entry, so HOME would default to "/" without this.
-	// Set after options to prevent caller-supplied values from misdirecting tool config.
-	cfg.environment["HOME"] = cfg.containerHome
+	// TERM for proper TUI rendering inside the container.
+	if cfg.environment["TERM"] == "" {
+		cfg.environment["TERM"] = "xterm-256color"
+	}
 
 	return cfg
 }
 
-// ListManagedContainers returns names of all containers with the managed-by=agent-deck label.
+// ListManagedContainers returns names of all containers with the managed-by=arnold label.
 func ListManagedContainers(ctx context.Context) ([]string, error) {
 	out, err := exec.CommandContext(ctx,
 		"docker", "ps", "-a",
-		"--filter", "label=managed-by=agent-deck",
+		"--filter", "label=managed-by=arnold",
 		"--format", "{{.Names}}",
 	).CombinedOutput()
 	if err != nil {
