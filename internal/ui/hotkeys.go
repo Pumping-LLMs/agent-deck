@@ -41,6 +41,7 @@ const (
 	hotkeyReload          = "reload"
 	hotkeyDetach          = "detach"
 	hotkeyWatcherPanel    = "watcher_panel"
+	hotkeyQuickArnold     = "quick_arnold"
 )
 
 var hotkeyActionOrder = []string{
@@ -77,6 +78,7 @@ var hotkeyActionOrder = []string{
 	hotkeyReload,
 	hotkeyDetach,
 	hotkeyWatcherPanel,
+	hotkeyQuickArnold,
 }
 
 var defaultHotkeyBindings = map[string]string{
@@ -113,6 +115,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyReload:          "ctrl+r",
 	hotkeyDetach:          "ctrl+q",
 	hotkeyWatcherPanel:    "w",
+	hotkeyQuickArnold:     "A",
 }
 
 var hotkeyActionDefaultTriggers = map[string][]string{
@@ -121,6 +124,7 @@ var hotkeyActionDefaultTriggers = map[string][]string{
 	hotkeyMoveToGroup:     {"M", "shift+m"},
 	hotkeyWorktreeFinish:  {"W", "shift+w"},
 	hotkeyEditSession:     {"P", "shift+p"},
+	hotkeyQuickArnold:     {"A", "shift+a"},
 }
 
 // renamedHotkeys maps old action names to new names for backward compatibility.

@@ -6378,6 +6378,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Quick create: auto-generated name, smart defaults from group context
 		return h, h.quickCreateSession()
 
+	case "A":
+		// Quick Arnold: create a sandboxed Arnold session in cwd, no dialog
+		return h, h.quickCreateArnoldSession()
+
 	case "z":
 		h.zoxidePicker.SetSize(h.width, h.height)
 		h.zoxidePicker.Show()
@@ -8367,6 +8371,36 @@ func (h *Home) quickCreateSessionAt(projectPath string) tea.Cmd {
 		false, nil,
 		"", "",
 		"",
+	)
+}
+
+// quickCreateArnoldSession creates a sandboxed Arnold session in the current
+// working directory with no dialog. Press A to launch.
+func (h *Home) quickCreateArnoldSession() tea.Cmd {
+	projectPath, err := os.Getwd()
+	if err != nil {
+		return func() tea.Msg {
+			return sessionCreatedMsg{err: fmt.Errorf("cannot determine project path: %w", err)}
+		}
+	}
+
+	preferred := deriveSessionNameFromPath(projectPath)
+	h.instancesMu.RLock()
+	name := ensureUniqueSessionTitle(preferred, h.instances)
+	h.instancesMu.RUnlock()
+
+	return h.createSessionInGroupWithWorktreeAndOptions(
+		name, projectPath, "claude",
+		"",         // auto-derive group from path
+		"", "", "", // no worktree
+		false,      // no yolo mode
+		true,       // sandboxEnabled — run in Arnold Docker container
+		nil,        // no tool options
+		nil,        // no extra claude args
+		"",         // no startup query
+		false, nil, // no multi-repo
+		"", "", // no parent
+		"", // no placeholder
 	)
 }
 
