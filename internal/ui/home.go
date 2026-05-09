@@ -6378,7 +6378,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Quick create: auto-generated name, smart defaults from group context
 		return h, h.quickCreateSession()
 
-	case "A":
+	case "a":
 		// Quick Arnold: create a sandboxed Arnold session in cwd, no dialog
 		return h, h.quickCreateArnoldSession()
 
@@ -6472,7 +6472,7 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, nil
 
-	case defaultHotkeyBindings[hotkeyQuickApprove]:
+	case "A":
 		// Quick approve: send "1" + Enter to the highlighted Claude session
 		// without attaching. Gated to Claude-compatible tools so a stray press
 		// on a vim/shell session cannot dump a "1" into the buffer. No status

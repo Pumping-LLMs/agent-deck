@@ -96,7 +96,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeySkillsManager:   "s",
 	hotkeyTogglePreview:   "v",
 	hotkeyMarkUnread:      "u",
-	hotkeyQuickApprove:    "a",
+	hotkeyQuickApprove:    "A",
 	hotkeyToggleYolo:      "y",
 	hotkeyQuickFork:       "f",
 	hotkeyForkWithOptions: "F",
@@ -115,7 +115,7 @@ var defaultHotkeyBindings = map[string]string{
 	hotkeyReload:          "ctrl+r",
 	hotkeyDetach:          "ctrl+q",
 	hotkeyWatcherPanel:    "w",
-	hotkeyQuickArnold:     "A",
+	hotkeyQuickArnold:     "a",
 }
 
 var hotkeyActionDefaultTriggers = map[string][]string{
@@ -124,7 +124,7 @@ var hotkeyActionDefaultTriggers = map[string][]string{
 	hotkeyMoveToGroup:     {"M", "shift+m"},
 	hotkeyWorktreeFinish:  {"W", "shift+w"},
 	hotkeyEditSession:     {"P", "shift+p"},
-	hotkeyQuickArnold:     {"A", "shift+a"},
+	hotkeyQuickApprove:    {"A", "shift+a"},
 }
 
 // renamedHotkeys maps old action names to new names for backward compatibility.
