@@ -68,3 +68,4 @@ __pycache__/
 
 # Internal planning / scratch (design docs, phase plans) — private to maintainer host
 .planning/
+.claude/worktrees/
