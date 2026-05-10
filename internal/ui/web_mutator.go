@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/web"
@@ -44,6 +45,45 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath string) (
 	allInstances := append(existing, inst) //nolint:gocritic
 	if err := storage.SaveWithGroups(allInstances, m.h.groupTree); err != nil {
 		return "", fmt.Errorf("save session: %w", err)
+	}
+	return inst.ID, nil
+}
+
+// CreateArnoldSession creates a sandboxed Arnold session in the current working
+// directory — the web equivalent of the TUI "a" hotkey. Title is auto-derived
+// from the directory name and sandbox mode is enabled.
+func (m *WebMutator) CreateArnoldSession() (string, error) {
+	projectPath, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine project path: %w", err)
+	}
+
+	preferred := deriveSessionNameFromPath(projectPath)
+	m.h.instancesMu.RLock()
+	name := ensureUniqueSessionTitle(preferred, m.h.instances)
+	m.h.instancesMu.RUnlock()
+
+	inst := session.NewInstanceWithTool(name, projectPath, "claude")
+	inst.Sandbox = session.NewSandboxConfig("")
+
+	if err := inst.Start(); err != nil {
+		return "", fmt.Errorf("start arnold session: %w", err)
+	}
+
+	storage, err := session.NewStorageWithProfile(m.h.profile)
+	if err != nil {
+		return "", fmt.Errorf("open storage: %w", err)
+	}
+	defer storage.Close()
+
+	m.h.instancesMu.RLock()
+	existing := make([]*session.Instance, len(m.h.instances))
+	copy(existing, m.h.instances)
+	m.h.instancesMu.RUnlock()
+
+	allInstances := append(existing, inst) //nolint:gocritic
+	if err := storage.SaveWithGroups(allInstances, m.h.groupTree); err != nil {
+		return "", fmt.Errorf("save arnold session: %w", err)
 	}
 	return inst.ID, nil
 }

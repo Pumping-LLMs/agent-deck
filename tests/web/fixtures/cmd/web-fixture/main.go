@@ -218,6 +218,11 @@ func (s *fixtureStore) CreateSession(title, tool, projectPath, groupPath string)
 	return id, nil
 }
 
+// CreateArnoldSession implements web.SessionMutator.
+func (s *fixtureStore) CreateArnoldSession() (string, error) {
+	return s.CreateSession("arnold-session", "claude", "/tmp/arnold", "")
+}
+
 func (s *fixtureStore) StartSession(id string) error {
 	return s.transition(id, session.StatusRunning)
 }

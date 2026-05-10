@@ -408,6 +408,10 @@ func (s *parityStore) CreateSession(title, tool, projectPath, groupPath string) 
 	return id, nil
 }
 
+func (s *parityStore) CreateArnoldSession() (string, error) {
+	return s.CreateSession("arnold-session", "claude", "/tmp/arnold", "")
+}
+
 func (s *parityStore) StartSession(id string) error   { return s.transition(id, session.StatusRunning) }
 func (s *parityStore) StopSession(id string) error    { return s.transition(id, session.StatusStopped) }
 func (s *parityStore) RestartSession(id string) error { return s.transition(id, session.StatusRunning) }

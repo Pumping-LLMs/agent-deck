@@ -182,6 +182,10 @@ export function AppShell() {
         document.querySelector('.side-filter input')?.focus()
       }
       else if (e.key === 'n' && mutationsEnabledSignal.value) { createSessionDialogSignal.value = true }
+      else if (e.key === 'a' && mutationsEnabledSignal.value) {
+        e.preventDefault()
+        apiFetch('POST', '/api/sessions/quick-arnold').catch(() => {})
+      }
       else if (e.key === ']') { railSignal.value = railSignal.value === 'visible' ? 'hidden' : 'visible' }
       else if (e.key === 'Escape') {
         paletteOpenSignal.value = false

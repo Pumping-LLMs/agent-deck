@@ -40,6 +40,7 @@ type MenuDataLoader interface {
 // It bridges web HTTP handlers to the TUI session/group management methods.
 type SessionMutator interface {
 	CreateSession(title, tool, projectPath, groupPath string) (string, error)
+	CreateArnoldSession() (string, error)
 	StartSession(sessionID string) error
 	StopSession(sessionID string) error
 	RestartSession(sessionID string) error
@@ -125,6 +126,7 @@ func NewServer(cfg Config) *Server {
 	mux.HandleFunc("/api/menu", s.handleMenu)
 	mux.HandleFunc("/api/session/", s.handleSessionByID)
 	mux.HandleFunc("/api/sessions", s.handleSessionsCollection)
+	mux.HandleFunc("/api/sessions/quick-arnold", s.handleQuickArnold)
 	mux.HandleFunc("/api/sessions/", s.handleSessionByAction)
 	mux.HandleFunc("/api/groups", s.handleGroupsCollection)
 	mux.HandleFunc("/api/groups/", s.handleGroupByPath)

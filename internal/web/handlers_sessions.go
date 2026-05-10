@@ -80,6 +80,36 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// handleQuickArnold creates a sandboxed Arnold session in the server's working
+// directory with no dialog — the web equivalent of the TUI "a" hotkey.
+func (s *Server) handleQuickArnold(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeRequest(r) {
+		writeAPIError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !s.checkMutationsAllowed(w) {
+		return
+	}
+	if !s.checkMutationRateLimit(w) {
+		return
+	}
+	if s.mutator == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeNotImplemented, "mutations not available")
+		return
+	}
+	sessionID, err := s.mutator.CreateArnoldSession()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
+		return
+	}
+	s.notifyMenuChanged()
+	writeJSON(w, http.StatusCreated, SessionActionResponse{SessionID: sessionID})
+}
+
 func (s *Server) handleSessionByAction(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRequest(r) {
 		writeAPIError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")

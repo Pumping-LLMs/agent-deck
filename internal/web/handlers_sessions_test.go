@@ -14,15 +14,16 @@ import (
 // fakeMutator is a test double for SessionMutator that delegates to function fields.
 // If a function field is nil, the method returns an error indicating it is unconfigured.
 type fakeMutator struct {
-	createSessionFn  func(title, tool, projectPath, groupPath string) (string, error)
-	startSessionFn   func(id string) error
-	stopSessionFn    func(id string) error
-	restartSessionFn func(id string) error
-	deleteSessionFn  func(id string) error
-	forkSessionFn    func(id string) (string, error)
-	createGroupFn    func(name, parentPath string) (string, error)
-	renameGroupFn    func(groupPath, newName string) error
-	deleteGroupFn    func(groupPath string) error
+	createSessionFn       func(title, tool, projectPath, groupPath string) (string, error)
+	createArnoldSessionFn func() (string, error)
+	startSessionFn        func(id string) error
+	stopSessionFn         func(id string) error
+	restartSessionFn      func(id string) error
+	deleteSessionFn       func(id string) error
+	forkSessionFn         func(id string) (string, error)
+	createGroupFn         func(name, parentPath string) (string, error)
+	renameGroupFn         func(groupPath, newName string) error
+	deleteGroupFn         func(groupPath string) error
 }
 
 func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath string) (string, error) {
@@ -30,6 +31,13 @@ func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath string) 
 		return "", fmt.Errorf("createSession not configured")
 	}
 	return f.createSessionFn(title, tool, projectPath, groupPath)
+}
+
+func (f *fakeMutator) CreateArnoldSession() (string, error) {
+	if f.createArnoldSessionFn == nil {
+		return "", fmt.Errorf("createArnoldSession not configured")
+	}
+	return f.createArnoldSessionFn()
 }
 
 func (f *fakeMutator) StartSession(id string) error {
@@ -411,5 +419,61 @@ func TestMutationNotifiesSSE(t *testing.T) {
 		// notification received
 	case <-time.After(250 * time.Millisecond):
 		t.Error("expected SSE notification within 250ms, got none")
+	}
+}
+
+func TestQuickArnoldCreatesSession(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		createArnoldSessionFn: func() (string, error) {
+			return "arnold-123", nil
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/quick-arnold", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"arnold-123"`) {
+		t.Errorf("expected session id in response, got: %s", rr.Body.String())
+	}
+}
+
+func TestQuickArnoldRejectsMutationsDisabled(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: false,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/quick-arnold", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusForbidden, rr.Code, rr.Body.String())
+	}
+}
+
+func TestQuickArnoldRejectsGET(t *testing.T) {
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/quick-arnold", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusMethodNotAllowed, rr.Code, rr.Body.String())
 	}
 }
