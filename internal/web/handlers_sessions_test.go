@@ -15,7 +15,7 @@ import (
 // If a function field is nil, the method returns an error indicating it is unconfigured.
 type fakeMutator struct {
 	createSessionFn       func(title, tool, projectPath, groupPath string) (string, error)
-	createArnoldSessionFn func() (string, error)
+	createArnoldSessionFn func(projectPath string) (string, error)
 	startSessionFn        func(id string) error
 	stopSessionFn         func(id string) error
 	restartSessionFn      func(id string) error
@@ -33,11 +33,11 @@ func (f *fakeMutator) CreateSession(title, tool, projectPath, groupPath string) 
 	return f.createSessionFn(title, tool, projectPath, groupPath)
 }
 
-func (f *fakeMutator) CreateArnoldSession() (string, error) {
+func (f *fakeMutator) CreateArnoldSession(projectPath string) (string, error) {
 	if f.createArnoldSessionFn == nil {
 		return "", fmt.Errorf("createArnoldSession not configured")
 	}
-	return f.createArnoldSessionFn()
+	return f.createArnoldSessionFn(projectPath)
 }
 
 func (f *fakeMutator) StartSession(id string) error {
@@ -429,7 +429,7 @@ func TestQuickArnoldCreatesSession(t *testing.T) {
 	})
 	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
 	srv.mutator = &fakeMutator{
-		createArnoldSessionFn: func() (string, error) {
+		createArnoldSessionFn: func(projectPath string) (string, error) {
 			return "arnold-123", nil
 		},
 	}
@@ -443,6 +443,33 @@ func TestQuickArnoldCreatesSession(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), `"arnold-123"`) {
 		t.Errorf("expected session id in response, got: %s", rr.Body.String())
+	}
+}
+
+func TestQuickArnoldPassesProjectPath(t *testing.T) {
+	var gotPath string
+	srv := NewServer(Config{
+		ListenAddr:   "127.0.0.1:0",
+		WebMutations: true,
+	})
+	srv.menuData = &fakeMenuDataLoader{snapshot: &MenuSnapshot{}}
+	srv.mutator = &fakeMutator{
+		createArnoldSessionFn: func(projectPath string) (string, error) {
+			gotPath = projectPath
+			return "arnold-456", nil
+		},
+	}
+
+	body := strings.NewReader(`{"projectPath":"/home/user/my-project"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/quick-arnold", body)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusCreated, rr.Code, rr.Body.String())
+	}
+	if gotPath != "/home/user/my-project" {
+		t.Errorf("expected projectPath %q, got %q", "/home/user/my-project", gotPath)
 	}
 }
 

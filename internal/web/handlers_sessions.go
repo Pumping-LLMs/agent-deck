@@ -80,8 +80,8 @@ func (s *Server) handleSessionsCollection(w http.ResponseWriter, r *http.Request
 	}
 }
 
-// handleQuickArnold creates a sandboxed Arnold session in the server's working
-// directory with no dialog — the web equivalent of the TUI "a" hotkey.
+// handleQuickArnold creates a sandboxed Arnold session. When a JSON body with
+// projectPath is provided, uses that directory; otherwise falls back to CWD.
 func (s *Server) handleQuickArnold(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeRequest(r) {
 		writeAPIError(w, http.StatusUnauthorized, ErrCodeUnauthorized, "unauthorized")
@@ -101,7 +101,13 @@ func (s *Server) handleQuickArnold(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusServiceUnavailable, ErrCodeNotImplemented, "mutations not available")
 		return
 	}
-	sessionID, err := s.mutator.CreateArnoldSession()
+	var req struct {
+		ProjectPath string `json:"projectPath"`
+	}
+	// Body is optional — ignore decode errors (empty body is fine).
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	sessionID, err := s.mutator.CreateArnoldSession(req.ProjectPath)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, ErrCodeInternalError, err.Error())
 		return

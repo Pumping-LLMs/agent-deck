@@ -408,8 +408,11 @@ func (s *parityStore) CreateSession(title, tool, projectPath, groupPath string) 
 	return id, nil
 }
 
-func (s *parityStore) CreateArnoldSession() (string, error) {
-	return s.CreateSession("arnold-session", "claude", "/tmp/arnold", "")
+func (s *parityStore) CreateArnoldSession(projectPath string) (string, error) {
+	if projectPath == "" {
+		projectPath = "/tmp/arnold"
+	}
+	return s.CreateSession("arnold-session", "claude", projectPath, "")
 }
 
 func (s *parityStore) StartSession(id string) error   { return s.transition(id, session.StatusRunning) }

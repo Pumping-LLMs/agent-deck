@@ -17,7 +17,7 @@ type noopMutator struct{}
 func (noopMutator) CreateSession(string, string, string, string) (string, error) {
 	return "", nil
 }
-func (noopMutator) CreateArnoldSession() (string, error) { return "", nil }
+func (noopMutator) CreateArnoldSession(string) (string, error) { return "", nil }
 func (noopMutator) StartSession(string) error            { return nil }
 func (noopMutator) StopSession(string) error           { return nil }
 func (noopMutator) RestartSession(string) error        { return nil }

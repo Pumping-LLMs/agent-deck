@@ -49,13 +49,16 @@ func (m *WebMutator) CreateSession(title, tool, projectPath, groupPath string) (
 	return inst.ID, nil
 }
 
-// CreateArnoldSession creates a sandboxed Arnold session in the current working
-// directory — the web equivalent of the TUI "a" hotkey. Title is auto-derived
+// CreateArnoldSession creates a sandboxed Arnold session. When projectPath is
+// empty, falls back to the server's working directory. Title is auto-derived
 // from the directory name and sandbox mode is enabled.
-func (m *WebMutator) CreateArnoldSession() (string, error) {
-	projectPath, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine project path: %w", err)
+func (m *WebMutator) CreateArnoldSession(projectPath string) (string, error) {
+	if projectPath == "" {
+		var err error
+		projectPath, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine project path: %w", err)
+		}
 	}
 
 	preferred := deriveSessionNameFromPath(projectPath)
